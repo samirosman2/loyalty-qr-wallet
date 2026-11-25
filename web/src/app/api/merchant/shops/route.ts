@@ -52,43 +52,61 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const user = await getAuthenticatedUser();
-  if (!user) return fail("Unauthorized.", 401);
-
-  let body: Record<string, unknown>;
   try {
-    body = await request.json();
-  } catch {
-    return fail("Invalid JSON body.", 400);
+    const user = await getAuthenticatedUser();
+    if (!user) return fail("Unauthorized.", 401);
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) return fail("Invalid JSON body.", 400);
+      throw error;
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return fail("Invalid JSON body.", 400);
+    }
+
+    const { name: rawName, slug: rawSlug, description: rawDescription } = body as Record<string, unknown>;
+    const name = typeof rawName === "string" ? rawName.trim() : "";
+    if (!name || name.length > 100) return fail("name is required (max 100 characters).", 400);
+    if (rawSlug != null && typeof rawSlug !== "string") return fail("slug must be a string.", 400);
+    if (rawDescription != null && typeof rawDescription !== "string") {
+      return fail("description must be a string.", 400);
+    }
+
+    const slug = normalizeSlug(rawSlug?.trim() || name);
+    const description = rawDescription?.trim();
+    if (!slug || slug.length > 60) return fail("slug is required (max 60 characters).", 400);
+    if (description && description.length > 500) return fail("description is too long (max 500).", 400);
+
+    const supabase = createSupabaseAdminClient();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const suffix = attempt === 0 ? "" : `-${crypto.randomUUID().slice(0, 8)}`;
+      const candidate = suffix ? `${slug.slice(0, 60 - suffix.length).replace(/-+$/, "")}${suffix}` : slug;
+      const { data: shop, error } = await supabase
+        .from("shops")
+        .insert({
+          name,
+          slug: candidate,
+          owner_user_id: user.id,
+          ...(description ? { description } : {}),
+        })
+        .select("*")
+        .single<Shop>();
+      if (!error) {
+        return NextResponse.json({ shop: { ...shop, rewards: [], card_count: 0, customer_count: 0 } }, { status: 201 });
+      }
+      if (error.code !== "23505" || attempt === 4) throw error;
+    }
+    throw new Error("Could not create shop.");
+  } catch (err) {
+    console.error("[POST /api/merchant/shops]", err);
+    const error = err && typeof err === "object" ? err : {};
+    return NextResponse.json({
+      error: "message" in error && typeof error.message === "string" && error.message || "Could not create shop.",
+      code: "code" in error && typeof error.code === "string" && error.code || null,
+      details: "details" in error && typeof error.details === "string" && error.details || null,
+    }, { status: 500 });
   }
-
-  const name = typeof body.name === "string" ? body.name.trim() : "";
-  const description = typeof body.description === "string" && body.description.trim() ? body.description.trim() : null;
-  const slug = typeof body.slug === "string" ? normalizeSlug(body.slug) : "";
-
-  if (!name || name.length > 100) return fail("name is required (max 100 characters).", 400);
-  if (!slug || slug.length > 60) return fail("slug is required (max 60 characters).", 400);
-  if (description && description.length > 500) return fail("description is too long (max 500).", 400);
-
-  const supabase = createSupabaseAdminClient();
-
-  const { data: existing, error: lookupError } = await supabase
-    .from("shops")
-    .select("id")
-    .eq("slug", slug)
-    .maybeSingle();
-  if (lookupError) return fail("Could not check slug.", 500);
-  if (existing) return fail("That slug is already taken.", 409);
-
-  const { data: shop, error } = await supabase
-    .from("shops")
-    .insert({ name, slug, description, owner_user_id: user.id })
-    .select("*")
-    .single<Shop>();
-  if (error) {
-    if (error.code === "23505") return fail("That slug is already taken.", 409);
-    return fail("Could not create shop.", 500);
-  }
-
-  return NextResponse.json({ shop: { ...shop, rewards: [], card_count: 0, customer_count: 0 } }, { status: 201 });
 }

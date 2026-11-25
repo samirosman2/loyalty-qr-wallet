@@ -67,7 +67,7 @@ export default function MerchantDashboard() {
       }
       const json = await res.json();
       if (!res.ok) {
-        setError(json.error ?? "Request failed.");
+        setError([json.error ?? "Request failed.", json.details].filter(Boolean).join(" "));
         return false;
       }
       if (url.endsWith("/shops") && json.shop) setSelectedId(json.shop.id);
