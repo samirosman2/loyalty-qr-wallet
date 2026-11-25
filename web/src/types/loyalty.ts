@@ -7,6 +7,7 @@ export interface Shop {
   owner_user_id: string | null;
   name: string;
   slug: string;
+  description: string | null;
   require_card_approval: boolean;
   points_per_purchase: number;
   currency: string;

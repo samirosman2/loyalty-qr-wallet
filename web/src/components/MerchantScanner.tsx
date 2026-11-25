@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { Html5Qrcode } from "html5-qrcode";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
@@ -147,6 +148,10 @@ export default function MerchantScanner() {
     <main className="mx-auto min-h-dvh w-full max-w-md space-y-5 bg-zinc-50 px-4 py-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-zinc-900">Scan loyalty card</h1>
+        <div className="flex gap-2">
+        <Link href="/merchant/dashboard" className="rounded-xl bg-indigo-600 px-3 py-2 text-sm font-medium text-white">
+          Dashboard
+        </Link>
         <button
           type="button"
           onClick={async () => {
@@ -159,6 +164,7 @@ export default function MerchantScanner() {
         >
           Sign Out
         </button>
+        </div>
       </div>
 
       <section className="space-y-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-zinc-200">

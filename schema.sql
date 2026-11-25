@@ -5,11 +5,15 @@ create table public.shops (
   owner_user_id uuid references auth.users(id) on delete cascade,
   name text not null,
   slug text unique not null,
+  description text,
   require_card_approval boolean not null default false,
   points_per_purchase int not null default 1,
   currency text not null default 'EUR',
   created_at timestamptz not null default now()
 );
+
+-- For databases created before `description` existed:
+alter table public.shops add column if not exists description text;
 
 create table public.customers (
   id uuid primary key default gen_random_uuid(),

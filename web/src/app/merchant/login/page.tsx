@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 
@@ -21,7 +22,7 @@ export default function MerchantLoginPage() {
       setLoading(false);
       return;
     }
-    router.replace("/merchant/scan");
+    router.replace("/merchant/dashboard");
     router.refresh();
   }
 
@@ -47,6 +48,11 @@ export default function MerchantLoginPage() {
           className="w-full rounded-xl bg-indigo-600 px-4 py-3.5 text-base font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60">
           {loading ? "Signing in…" : "Sign in"}
         </button>
+        <p className="text-center text-sm text-zinc-500">
+          After signing in: <Link href="/merchant/dashboard" className="font-medium text-indigo-600">Dashboard</Link>
+          {" · "}
+          <Link href="/merchant/scan" className="font-medium text-indigo-600">Scan</Link>
+        </p>
       </form>
     </main>
   );
