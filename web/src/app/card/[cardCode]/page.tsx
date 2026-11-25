@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import CardQr from "@/components/CardQr";
+import RememberCard from "@/components/RememberCard";
 import SaveCardPrompt from "@/components/SaveCardPrompt";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
 import type { Customer, LoyaltyCard, Reward, Shop } from "@/types/loyalty";
@@ -32,6 +33,7 @@ async function CardView({ params }: { params: Promise<{ cardCode: string }> }) {
 
   return (
     <main className="mx-auto min-h-dvh w-full max-w-md bg-zinc-50 px-4 py-6">
+      <RememberCard cardCode={card.card_code} />
       <section className="rounded-3xl bg-gradient-to-br from-indigo-600 to-violet-700 p-6 text-white shadow-lg">
         <p className="text-sm uppercase tracking-wide text-indigo-100">{shop.name}</p>
         <h1 className="mt-1 text-2xl font-semibold">{customer.full_name}</h1>

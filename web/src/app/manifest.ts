@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Loyalty QR Wallet",
-    short_name: "Loyalty",
+    name: "Loyalty Wallet",
+    short_name: "Loyalty Wallet",
     description: "Digital loyalty cards and merchant point management.",
     start_url: "/",
     display: "standalone",
