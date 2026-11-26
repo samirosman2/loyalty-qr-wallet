@@ -21,12 +21,19 @@ async function parseBody(request: Request): Promise<Record<string, unknown> | nu
 
 async function ownsShop(shopId: string, userId: string) {
   const supabase = createSupabaseAdminClient();
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("shops")
-    .select("owner_user_id")
+    .select("owner_user_id, brand_id")
     .eq("id", shopId)
-    .maybeSingle<Pick<Shop, "owner_user_id">>();
-  return { exists: !!data, owned: data?.owner_user_id === userId };
+    .maybeSingle<Pick<Shop, "owner_user_id" | "brand_id">>();
+  if (error) return { exists: false, owned: false, error };
+  if (!data || data.owner_user_id === userId || !data.brand_id) {
+    return { exists: !!data, owned: data?.owner_user_id === userId, error: null };
+  }
+  const { data: membership, error: memberError } = await supabase.from("brand_members")
+    .select("id").eq("brand_id", data.brand_id).eq("user_id", userId)
+    .in("role", ["owner", "manager"]).maybeSingle();
+  return { exists: true, owned: !!membership, error: memberError };
 }
 
 export async function POST(request: Request) {
@@ -41,7 +48,8 @@ export async function POST(request: Request) {
   if (!validTitle(title)) return fail("title is required (max 100 characters).", 400);
   if (!validPoints(pointsRequired)) return fail("points_required must be a positive integer.", 400);
 
-  const { exists, owned } = await ownsShop(shopId, user.id);
+  const { exists, owned, error: accessError } = await ownsShop(shopId, user.id);
+  if (accessError) return fail("Could not verify shop access.", 500);
   if (!exists) return fail("Shop not found.", 404);
   if (!owned) return fail("Forbidden.", 403);
 
@@ -81,14 +89,16 @@ export async function PATCH(request: Request) {
   if (Object.keys(updates).length === 0) return fail("Nothing to update.", 400);
 
   const supabase = createSupabaseAdminClient();
-  const { data: reward } = await supabase
+  const { data: reward, error: lookupError } = await supabase
     .from("rewards")
     .select("shop_id")
     .eq("id", rewardId)
     .maybeSingle<Pick<Reward, "shop_id">>();
+  if (lookupError) return fail("Could not load reward.", 500);
   if (!reward) return fail("Reward not found.", 404);
 
-  const { owned } = await ownsShop(reward.shop_id, user.id);
+  const { owned, error: accessError } = await ownsShop(reward.shop_id, user.id);
+  if (accessError) return fail("Could not verify shop access.", 500);
   if (!owned) return fail("Forbidden.", 403);
 
   const { data, error } = await supabase

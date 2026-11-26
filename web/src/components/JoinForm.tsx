@@ -2,6 +2,8 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import EmailOtpVerifier from "@/components/EmailOtpVerifier";
+import { CORE_CONSENT_TEXT, MARKETING_CONSENT_TEXT } from "@/lib/consent-text";
 import type { LoyaltyCard } from "@/types/loyalty";
 
 export default function JoinForm({ shopSlug }: { shopSlug: string }) {
@@ -9,14 +11,16 @@ export default function JoinForm({ shopSlug }: { shopSlug: string }) {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [verifiedEmail, setVerifiedEmail] = useState("");
+  const [marketingAdsConsent, setMarketingAdsConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!email.trim() && !phone.trim()) {
-      setError("Please enter an email or a phone number.");
+    if (!email.trim() || verifiedEmail !== email.trim().toLowerCase()) {
+      setError("Bitte bestätigen Sie zuerst Ihre E-Mail-Adresse.");
       return;
     }
     setLoading(true);
@@ -29,6 +33,7 @@ export default function JoinForm({ shopSlug }: { shopSlug: string }) {
           fullName,
           email: email || undefined,
           phone: phone || undefined,
+          marketingAdsConsent,
         }),
       });
       const data: { error?: string; card?: LoyaltyCard } = await res.json();
@@ -60,21 +65,28 @@ export default function JoinForm({ shopSlug }: { shopSlug: string }) {
         </div>
         <div>
           <label htmlFor="email" className="text-sm font-medium text-zinc-700">Email</label>
-          <input id="email" type="email" inputMode="email" autoComplete="email" value={email}
-            onChange={(e) => setEmail(e.target.value)} className={inputClass} />
+          <input id="email" type="email" required inputMode="email" autoComplete="email" value={email}
+            onChange={(e) => { setEmail(e.target.value); setVerifiedEmail(""); }} className={inputClass} />
         </div>
-        <div className="flex items-center gap-3 text-xs uppercase text-zinc-400">
-          <span className="h-px flex-1 bg-zinc-200" />or<span className="h-px flex-1 bg-zinc-200" />
-        </div>
+        {verifiedEmail === email.trim().toLowerCase() && verifiedEmail ? (
+          <p role="status" className="text-sm text-emerald-700">E-Mail-Adresse bestätigt.</p>
+        ) : <EmailOtpVerifier email={email} onVerified={setVerifiedEmail} />}
         <div>
-          <label htmlFor="phone" className="text-sm font-medium text-zinc-700">Phone</label>
+          <label htmlFor="phone" className="text-sm font-medium text-zinc-700">Phone (optional)</label>
           <input id="phone" type="tel" inputMode="tel" autoComplete="tel" value={phone}
             onChange={(e) => setPhone(e.target.value)} className={inputClass} />
         </div>
 
+        <p className="text-sm text-zinc-600">{CORE_CONSENT_TEXT}</p>
+        <label className="flex items-start gap-3 text-sm text-zinc-700">
+          <input type="checkbox" checked={marketingAdsConsent} onChange={(e) => setMarketingAdsConsent(e.target.checked)}
+            className="mt-1 h-4 w-4 accent-indigo-600" />
+          <span>{MARKETING_CONSENT_TEXT}</span>
+        </label>
+
         {error && <p role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
-        <button type="submit" disabled={loading}
+        <button type="submit" disabled={loading || !verifiedEmail || verifiedEmail !== email.trim().toLowerCase()}
           className="w-full rounded-xl bg-indigo-600 px-4 py-3.5 text-base font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-60">
           {loading ? "Creating your card…" : "Get my card"}
         </button>

@@ -2,12 +2,21 @@ export type CardStatus = "pending" | "active" | "blocked";
 export type WalletPlatform = "apple" | "google" | "samsung" | "web";
 export type TransactionType = "earn" | "redeem" | "adjust";
 
+export interface LoyaltyBrand {
+  id: string;
+  name: string;
+  plan_tier: "starter" | "growth" | "pro";
+  max_branches: number;
+}
+
 export interface Shop {
   id: string;
   owner_user_id: string | null;
   name: string;
   slug: string;
   description: string | null;
+  brand_id: string | null;
+  is_active: boolean;
   require_card_approval: boolean;
   points_per_purchase: number;
   currency: string;

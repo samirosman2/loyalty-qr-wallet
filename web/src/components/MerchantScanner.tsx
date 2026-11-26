@@ -21,6 +21,8 @@ export default function MerchantScanner() {
   const router = useRouter();
   const [manualCode, setManualCode] = useState("");
   const [data, setData] = useState<CardData | null>(null);
+  const [shops, setShops] = useState<Shop[]>([]);
+  const [shopId, setShopId] = useState("");
   const [scanning, setScanning] = useState(false);
   const [loadingCard, setLoadingCard] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -29,13 +31,37 @@ export default function MerchantScanner() {
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const submittingRef = useRef(false);
 
-  const loadCard = useCallback(async (code: string) => {
+  useEffect(() => {
+    let cancelled = false;
+    async function loadShops() {
+      try {
+        const res = await fetch("/api/merchant/shops");
+        if (res.status === 401) {
+          router.replace("/merchant/login");
+          return;
+        }
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? "Could not load branches.");
+        const activeShops: Shop[] = json.shops.filter((shop: Shop) => shop.is_active);
+        if (!cancelled) {
+          setShops(activeShops);
+          setShopId(activeShops[0]?.id ?? "");
+        }
+      } catch (error) {
+        if (!cancelled) setMessage({ kind: "error", text: error instanceof Error ? error.message : "Could not load branches." });
+      }
+    }
+    void loadShops();
+    return () => { cancelled = true; };
+  }, [router]);
+
+  const loadCard = useCallback(async (code: string, preserveMessage = false) => {
     const trimmed = code.trim();
-    if (!trimmed) return;
+    if (!trimmed || !shopId) return;
     setLoadingCard(true);
-    setMessage(null);
+    if (!preserveMessage) setMessage(null);
     try {
-      const res = await fetch(`/api/cards/${encodeURIComponent(trimmed)}`);
+      const res = await fetch(`/api/cards/${encodeURIComponent(trimmed)}?shopId=${encodeURIComponent(shopId)}`);
       const json = await res.json();
       if (res.status === 401) {
         router.replace("/merchant/login");
@@ -48,11 +74,12 @@ export default function MerchantScanner() {
         setData(json as CardData);
       }
     } catch {
+      setData(null);
       setMessage({ kind: "error", text: "Network error." });
     } finally {
       setLoadingCard(false);
     }
-  }, [router]);
+  }, [router, shopId]);
 
   const stopScanner = useCallback(async () => {
     const scanner = scannerRef.current;
@@ -111,6 +138,7 @@ export default function MerchantScanner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cardCode: data.card.card_code,
+          shopId,
           type,
           pointsDelta,
           rewardId,
@@ -130,7 +158,7 @@ export default function MerchantScanner() {
       } else {
         setMessage({ kind: "error", text: describeError(json.status, json.error) });
       }
-      await loadCard(data.card.card_code);
+      await loadCard(data.card.card_code, true);
     } catch {
       setMessage({ kind: "error", text: "Network error. Check the balance before retrying." });
     } finally {
@@ -168,9 +196,17 @@ export default function MerchantScanner() {
       </div>
 
       <section className="space-y-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-zinc-200">
+        <label htmlFor="active-branch" className="block text-sm font-medium text-zinc-700">Active branch</label>
+        <select id="active-branch" value={shopId} disabled={scanning || loadingCard || submitting || shops.length === 0}
+          onChange={(event) => { setShopId(event.target.value); setData(null); setMessage(null); }}
+          className="w-full rounded-xl border border-zinc-300 px-4 py-3 text-base">
+          {shops.length === 0 && <option value="">No active branches available</option>}
+          {shops.map((shop) => <option key={shop.id} value={shop.id}>{shop.name}</option>)}
+        </select>
         <div id={SCANNER_ID} className={scanning ? "overflow-hidden rounded-xl" : "hidden"} />
         <button
           type="button"
+          disabled={!shopId || loadingCard || submitting}
           onClick={() => (scanning ? void stopScanner() : setScanning(true))}
           className={`${btn} w-full bg-zinc-900 text-white`}
         >
@@ -192,7 +228,7 @@ export default function MerchantScanner() {
             aria-label="Card code"
             className="min-w-0 flex-1 rounded-xl border border-zinc-300 px-4 py-3 font-mono text-base focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
           />
-          <button type="submit" disabled={loadingCard || !manualCode.trim()} className={`${btn} bg-indigo-600 text-white`}>
+          <button type="submit" disabled={loadingCard || submitting || !shopId || !manualCode.trim()} className={`${btn} bg-indigo-600 text-white`}>
             {loadingCard ? "…" : "Load Card"}
           </button>
         </form>
@@ -316,6 +352,14 @@ function describeError(status?: string, fallback?: string) {
       return "This card is not active.";
     case "card_not_found":
       return "Card not found.";
+    case "invalid_reward":
+      return "This reward is no longer available at this brand or its cost has changed.";
+    case "idempotency_conflict":
+      return "This transaction key was already used for a different action.";
+    case "forbidden":
+      return "You cannot manage this branch.";
+    case "branch_not_active":
+      return "This branch is not active.";
     default:
       return fallback ?? "Transaction failed.";
   }

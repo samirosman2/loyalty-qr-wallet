@@ -5,9 +5,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
-import type { Reward, Shop } from "@/types/loyalty";
+import type { LoyaltyBrand, Reward, Shop } from "@/types/loyalty";
 
 type ShopWithStats = Shop & { rewards: Reward[]; card_count: number; customer_count: number };
+type BrandWithStats = LoyaltyBrand & { branch_count: number };
 
 const noopSubscribe = () => () => {};
 const input =
@@ -19,7 +20,10 @@ export default function MerchantDashboard() {
   const router = useRouter();
   const origin = useSyncExternalStore(noopSubscribe, () => window.location.origin, () => "");
   const [shops, setShops] = useState<ShopWithStats[]>([]);
+  const [brands, setBrands] = useState<BrandWithStats[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [brandId, setBrandId] = useState("");
+  const [creationMode, setCreationMode] = useState<"brand" | "branch">("brand");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +45,9 @@ export default function MerchantDashboard() {
       setError(json.error ?? "Could not load shops.");
     } else {
       setShops(json.shops);
+      setBrands(json.brands);
       setSelectedId((current) => current ?? json.shops[0]?.id ?? null);
+      setBrandId((current) => current || json.brands[0]?.id || "");
     }
     setLoading(false);
   }, [handleUnauthorized]);
@@ -87,6 +93,7 @@ export default function MerchantDashboard() {
       name: shopName,
       slug: shopSlug || shopName,
       description: shopDescription || undefined,
+      ...(creationMode === "branch" ? { brandId } : {}),
     });
     if (ok) {
       setShopName("");
@@ -116,6 +123,7 @@ export default function MerchantDashboard() {
   }
 
   const selected = shops.find((s) => s.id === selectedId) ?? null;
+  const selectedBrand = brands.find((brand) => brand.id === selected?.brand_id);
   const joinUrl = selected && origin ? `${origin}/join/${selected.slug}` : "";
 
   async function copyJoinLink() {
@@ -149,6 +157,20 @@ export default function MerchantDashboard() {
       )}
       {loading && <p className="text-sm text-zinc-500">Loading…</p>}
 
+      {brands.length > 0 && (
+        <section className={`${card} space-y-3`}>
+          <h2 className="font-semibold text-zinc-900">Your brands</h2>
+          {brands.map((brand) => (
+            <div key={brand.id}>
+              <p className="font-medium text-zinc-900">{brand.name}</p>
+              <p className="text-sm text-zinc-500">
+                <span className="capitalize">{brand.plan_tier}</span> plan · {brand.branch_count} / {brand.max_branches} active branches
+              </p>
+            </div>
+          ))}
+        </section>
+      )}
+
       {shops.length > 0 && (
         <section className={card}>
           <label htmlFor="shop" className="text-sm font-medium text-zinc-700">Shop</label>
@@ -167,6 +189,19 @@ export default function MerchantDashboard() {
 
       {selected && (
         <>
+          <section className={card}>
+            {selectedBrand ? (
+              <>
+                <h2 className="font-semibold text-zinc-900">{selectedBrand.name}</h2>
+                <p className="text-sm capitalize text-zinc-500">{selectedBrand.plan_tier} plan</p>
+                <p className="text-sm text-zinc-500">
+                  Active branches: {selectedBrand.branch_count} / {selectedBrand.max_branches}
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-zinc-500">This shop has no accessible brand.</p>
+            )}
+          </section>
           <section className={`${card} grid grid-cols-2 gap-3 text-center`}>
             <div>
               <p className="text-3xl font-bold text-zinc-900">{selected.customer_count}</p>
@@ -223,12 +258,38 @@ export default function MerchantDashboard() {
       )}
 
       <section className={`${card} space-y-3`}>
-        <h2 className="font-semibold text-zinc-900">{shops.length === 0 ? "Create your first shop" : "Create another shop"}</h2>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => setCreationMode("brand")} aria-pressed={creationMode === "brand"}
+            className={`${btn} text-sm ${creationMode === "brand" ? "bg-indigo-600 text-white" : "bg-zinc-100 text-zinc-700"}`}>
+            + Create New Brand
+          </button>
+          <button type="button" onClick={() => setCreationMode("branch")} disabled={brands.length === 0}
+            aria-pressed={creationMode === "branch"}
+            className={`${btn} text-sm ${creationMode === "branch" ? "bg-indigo-600 text-white" : "bg-zinc-100 text-zinc-700"}`}>
+            + Add Branch to Brand
+          </button>
+        </div>
+        <h2 className="font-semibold text-zinc-900">{creationMode === "brand" ? "Create a brand and its first branch" : "Add a branch"}</h2>
+        {creationMode === "brand" && <p className="text-sm text-zinc-500">The brand and its first branch will share this name.</p>}
         <form onSubmit={createShop} className="space-y-2">
+          {creationMode === "branch" && (
+            <label className="block text-sm font-medium text-zinc-700">
+              Brand
+              <select value={brandId} onChange={(e) => setBrandId(e.target.value)} required className={`${input} mt-1`}>
+                {brands.map((brand) => (
+                  <option key={brand.id} value={brand.id}>
+                    {brand.name} ({brand.plan_tier}, {brand.branch_count} / {brand.max_branches} active branches)
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <input value={shopName} onChange={(e) => setShopName(e.target.value)} placeholder="Shop name" required aria-label="Shop name" className={input} />
           <input value={shopSlug} onChange={(e) => setShopSlug(e.target.value)} placeholder="URL slug (optional, e.g. test-cafe)" aria-label="Slug" className={input} />
           <input value={shopDescription} onChange={(e) => setShopDescription(e.target.value)} placeholder="Description (optional)" aria-label="Description" className={input} />
-          <button type="submit" disabled={busy} className={`${btn} w-full bg-indigo-600 text-white`}>Create shop</button>
+          <button type="submit" disabled={busy || (creationMode === "branch" && !brandId)} className={`${btn} w-full bg-indigo-600 text-white`}>
+            {creationMode === "brand" ? "Create brand" : "Add branch"}
+          </button>
         </form>
       </section>
     </main>

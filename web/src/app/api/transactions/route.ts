@@ -18,6 +18,9 @@ const STATUS_CODES: Record<string, number> = {
   insufficient_points: 409,
   invalid_type: 400,
   idempotency_conflict: 409,
+  forbidden: 403,
+  branch_not_active: 409,
+  invalid_reward: 400,
 };
 
 function fail(message: string, status: number) {
@@ -28,19 +31,20 @@ export async function POST(request: Request) {
   const user = await getAuthenticatedUser();
   if (!user) return fail("Unauthorized.", 401);
 
-  let body: Record<string, unknown>;
+  let input: unknown;
   try {
-    body = await request.json();
+    input = await request.json();
   } catch {
     return fail("Invalid JSON body.", 400);
   }
+  if (!input || typeof input !== "object" || Array.isArray(input)) return fail("Invalid JSON body.", 400);
+  const body = input as Record<string, unknown>;
 
   const cardCode = typeof body.cardCode === "string" ? body.cardCode.trim() : "";
   const type = body.type as TransactionType;
   const pointsDelta = body.pointsDelta;
   const rewardId = typeof body.rewardId === "string" && body.rewardId ? body.rewardId : null;
-  const idempotencyKey =
-    typeof body.idempotencyKey === "string" && body.idempotencyKey ? body.idempotencyKey : crypto.randomUUID();
+  const suppliedKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
   const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : null;
 
   if (!cardCode) return fail("cardCode is required.", 400);
@@ -60,23 +64,58 @@ export async function POST(request: Request) {
     return fail("Server is not configured.", 500);
   }
 
-  const { data: card } = await supabase
+  const { data: card, error: cardError } = await supabase
     .from("loyalty_cards")
-    .select("shop_id")
+    .select("*")
     .eq("card_code", cardCode)
-    .maybeSingle<Pick<LoyaltyCard, "shop_id">>();
+    .maybeSingle<LoyaltyCard>();
+  if (cardError) return fail("Could not load card.", 500);
   if (!card) return fail("Card not found.", 404);
 
-  const { data: shop } = await supabase
+  if (body.shopId !== undefined && (typeof body.shopId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.shopId.trim()))) {
+    return fail("shopId must be a valid UUID.", 400);
+  }
+  const shopId = typeof body.shopId === "string" ? body.shopId.trim() : card.shop_id;
+  const { data: shop, error: shopError } = await supabase
     .from("shops")
-    .select("owner_user_id")
-    .eq("id", card.shop_id)
-    .maybeSingle<Pick<Shop, "owner_user_id">>();
+    .select("*")
+    .eq("id", shopId)
+    .maybeSingle<Shop>();
+  if (shopError) return fail("Could not load branch.", 500);
   if (!shop || shop.owner_user_id !== user.id) return fail("Forbidden.", 403);
+  if (!shop.is_active) return fail("Branch is not active.", 409);
+
+  if (shop.brand_id) {
+    if (!suppliedKey) return fail("idempotencyKey is required.", 400);
+    const { data, error } = await supabase.rpc("process_brand_scan", {
+      p_user_id: user.id,
+      p_shop_id: shop.id,
+      p_card_code: cardCode,
+      p_type: type,
+      p_delta: pointsDelta,
+      p_idempotency_key: suppliedKey,
+      p_reward_id: rewardId,
+      p_note: note,
+    });
+    if (error || !data) {
+      console.error("[POST /api/transactions]", error);
+      return fail("Could not process transaction.", 500);
+    }
+    if (typeof data.status !== "string" || !["success", "duplicate", ...Object.keys(STATUS_CODES)].includes(data.status)) {
+      console.error("[POST /api/transactions] Unexpected RPC result", data);
+      return fail("Could not process transaction.", 500);
+    }
+    const status = data.status === "success" || data.status === "duplicate" ? 200 : STATUS_CODES[data.status];
+    return NextResponse.json({ status: data.status, card_id: data.card_id ?? null, new_balance: data.new_balance ?? null }, { status });
+  }
+
+  if (card.shop_id !== shop.id) return fail("Card belongs to a different shop.", 403);
 
   if (type === "redeem") {
     if (!rewardId) return fail("rewardId is required for redemptions.", 400);
-    const { data: reward } = await supabase.from("rewards").select("*").eq("id", rewardId).maybeSingle<Reward>();
+    const { data: reward, error: rewardError } = await supabase.from("rewards").select("*").eq("id", rewardId).maybeSingle<Reward>();
+    if (rewardError) return fail("Could not load reward.", 500);
     if (!reward || reward.shop_id !== card.shop_id || !reward.is_active) {
       return fail("Reward is not available for this card.", 400);
     }
@@ -90,7 +129,7 @@ export async function POST(request: Request) {
     p_type: type,
     p_points_delta: pointsDelta,
     p_reward_id: rewardId ?? null,
-    p_idempotency_key: idempotencyKey,
+    p_idempotency_key: suppliedKey || crypto.randomUUID(),
     p_note: note ?? null,
     p_performed_by: user.id,
   });

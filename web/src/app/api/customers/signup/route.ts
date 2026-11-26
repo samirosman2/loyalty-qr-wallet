@@ -1,7 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
-import type { Customer, LoyaltyCard, Reward, Shop } from "@/types/loyalty";
+import { getVerifiedCustomerEmail } from "@/lib/supabase/customer-server";
+import { CONSENT_VERSION, CORE_CONSENT_TEXT, MARKETING_CONSENT_TEXT } from "@/lib/consent-text";
+import { getBrandBalance, getShopRewards } from "@/lib/loyalty-data";
+import type { Customer, LoyaltyCard, Shop } from "@/types/loyalty";
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -23,12 +26,17 @@ function fail(message: string, status: number) {
 }
 
 export async function POST(request: Request) {
-  let body: Record<string, unknown>;
+  if (request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+    return fail("JSON body required.", 415);
+  }
+  let input: unknown;
   try {
-    body = await request.json();
+    input = await request.json();
   } catch {
     return fail("Invalid JSON body.", 400);
   }
+  if (!input || typeof input !== "object" || Array.isArray(input)) return fail("Invalid JSON body.", 400);
+  const body = input as Record<string, unknown>;
 
   const shopSlug = clean(body.shopSlug);
   const fullName = clean(body.fullName);
@@ -36,8 +44,22 @@ export async function POST(request: Request) {
   const phone = clean(body.phone);
 
   if (!shopSlug || !fullName) return fail("shopSlug and fullName are required.", 400);
-  if (!email && !phone) return fail("Provide an email or a phone number.", 400);
+  if (!email) return fail("A verified email address is required.", 400);
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail("Invalid email address.", 400);
+  if (body.marketingAdsConsent !== undefined && typeof body.marketingAdsConsent !== "boolean") {
+    return fail("marketingAdsConsent must be a boolean.", 400);
+  }
+  const marketingAdsConsent = body.marketingAdsConsent === true;
+
+  let verifiedEmail: string | null;
+  try {
+    verifiedEmail = await getVerifiedCustomerEmail();
+  } catch (error) {
+    console.error("[POST /api/customers/signup] Authentication failed", error);
+    return fail("Could not verify your email session.", 500);
+  }
+  if (!verifiedEmail) return fail("Verify your email address first.", 401);
+  if (verifiedEmail !== email) return fail("Email does not match your verified account.", 403);
 
   let supabase;
   try {
@@ -53,31 +75,19 @@ export async function POST(request: Request) {
     .eq("slug", shopSlug)
     .maybeSingle<Shop>();
   if (shopError) return fail("Could not load shop.", 500);
-  // The shops table has no active flag, so "active" means the shop exists.
-  if (!shop) return fail("Shop not found.", 404);
+  if (!shop || !shop.is_active) return fail("Shop not found.", 404);
+  if (!shop.brand_id) return fail("This shop must be assigned to a brand before signup.", 409);
 
-  // Find an existing customer by email, then by phone.
-  let customer: Customer | null = null;
-  if (email) {
-    const { data, error } = await supabase
-      .from("customers")
-      .select("*")
-      .ilike("email", email)
-      .limit(1)
-      .maybeSingle<Customer>();
-    if (error) return fail("Could not look up customer.", 500);
-    customer = data;
+  const { data: existingCustomer, error: customerError } = await supabase
+    .from("customers")
+    .select("*")
+    .ilike("email", email.replace(/[\\%_]/g, "\\$&"))
+    .maybeSingle<Customer>();
+  if (customerError) {
+    console.error("[POST /api/customers/signup] Customer lookup failed", customerError);
+    return fail("Could not look up customer.", 500);
   }
-  if (!customer && phone) {
-    const { data, error } = await supabase
-      .from("customers")
-      .select("*")
-      .eq("phone", phone)
-      .limit(1)
-      .maybeSingle<Customer>();
-    if (error) return fail("Could not look up customer.", 500);
-    customer = data;
-  }
+  let customer = existingCustomer;
   if (!customer) {
     const { data, error } = await supabase
       .from("customers")
@@ -124,14 +134,27 @@ export async function POST(request: Request) {
   }
   if (!card) return fail("Could not create loyalty card.", 500);
 
-  const { data: rewards, error: rewardsError } = await supabase
-    .from("rewards")
-    .select("*")
-    .eq("shop_id", shop.id)
-    .eq("is_active", true)
-    .order("points_required", { ascending: true })
-    .returns<Reward[]>();
-  if (rewardsError) return fail("Could not load rewards.", 500);
-
-  return NextResponse.json({ customer, card, shop, rewards: rewards ?? [] });
+  try {
+    const [rewards, balance] = await Promise.all([
+      getShopRewards(supabase, shop, true),
+      shop.brand_id ? getBrandBalance(supabase, shop.brand_id, customer.id) : Promise.resolve(card.points_balance),
+    ]);
+    const { error: consentError } = await supabase.from("customer_consents").insert([
+      {
+        brand_id: shop.brand_id, customer_id: customer.id, source_shop_id: shop.id,
+        consent_type: "loyalty_core", granted: true,
+        consent_version: CONSENT_VERSION, consent_text_snapshot: CORE_CONSENT_TEXT,
+      },
+      {
+        brand_id: shop.brand_id, customer_id: customer.id, source_shop_id: shop.id,
+        consent_type: "marketing_ads", granted: marketingAdsConsent,
+        consent_version: CONSENT_VERSION, consent_text_snapshot: MARKETING_CONSENT_TEXT,
+      },
+    ]);
+    if (consentError) throw consentError;
+    return NextResponse.json({ customer, card: { ...card, points_balance: balance }, shop, rewards });
+  } catch (error) {
+    console.error("[POST /api/customers/signup]", error);
+    return fail("Could not load loyalty details.", 500);
+  }
 }
