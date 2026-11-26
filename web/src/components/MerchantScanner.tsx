@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { Html5Qrcode } from "html5-qrcode";
-import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
-import type { Customer, LoyaltyCard, PointTransaction, Reward, Shop } from "@/types/loyalty";
+import SignOutButton from "@/components/SignOutButton";
+import type { Customer, CustomerVoucher, LoyaltyCard, PointTransaction, Reward, Shop } from "@/types/loyalty";
 
 interface CardData {
   card: LoyaltyCard;
@@ -13,11 +13,12 @@ interface CardData {
   shop: Shop;
   rewards: Reward[];
   transactions: PointTransaction[];
+  vouchers: CustomerVoucher[];
 }
 
 const SCANNER_ID = "qr-reader";
 
-export default function MerchantScanner() {
+export default function MerchantScanner({ canAccessDashboard }: { canAccessDashboard: boolean }) {
   const router = useRouter();
   const [manualCode, setManualCode] = useState("");
   const [data, setData] = useState<CardData | null>(null);
@@ -27,15 +28,19 @@ export default function MerchantScanner() {
   const [loadingCard, setLoadingCard] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [customPoints, setCustomPoints] = useState("");
+  const [purchaseAmount, setPurchaseAmount] = useState("");
+  const [billReference, setBillReference] = useState("");
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const submittingRef = useRef(false);
+  const pendingRef = useRef<{ signature: string; key: string } | null>(null);
+  const loadedCodeRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     async function loadShops() {
       try {
-        const res = await fetch("/api/merchant/shops");
+        const res = await fetch("/api/merchant/shops?mode=scan");
         if (res.status === 401) {
           router.replace("/merchant/login");
           return;
@@ -71,6 +76,10 @@ export default function MerchantScanner() {
         setData(null);
         setMessage({ kind: "error", text: json.error ?? "Could not load card." });
       } else {
+        if (loadedCodeRef.current !== trimmed) {
+          setPurchaseAmount(""); setBillReference(""); setCustomPoints("");
+        }
+        loadedCodeRef.current = trimmed;
         setData(json as CardData);
       }
     } catch {
@@ -129,6 +138,14 @@ export default function MerchantScanner() {
 
   async function submit(type: "earn" | "redeem", pointsDelta: number, rewardId?: string) {
     if (!data || submittingRef.current) return;
+    const amount = purchaseAmount.trim().replace(",", ".");
+    const bill = billReference.trim();
+    const payload = {
+      cardCode: data.card.card_code, shopId, type, pointsDelta, rewardId,
+      ...(type === "earn" ? { purchaseAmount: amount, billReference: bill } : {}),
+    };
+    const signature = JSON.stringify(payload);
+    if (pendingRef.current?.signature !== signature) pendingRef.current = { signature, key: crypto.randomUUID() };
     submittingRef.current = true;
     setSubmitting(true);
     setMessage(null);
@@ -137,12 +154,8 @@ export default function MerchantScanner() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cardCode: data.card.card_code,
-          shopId,
-          type,
-          pointsDelta,
-          rewardId,
-          idempotencyKey: crypto.randomUUID(),
+          ...payload,
+          idempotencyKey: pendingRef.current.key,
         }),
       });
       if (res.status === 401) {
@@ -151,11 +164,15 @@ export default function MerchantScanner() {
       }
       const json = await res.json();
       if (res.ok && (json.status === "success" || json.status === "duplicate")) {
+        pendingRef.current = null;
+        const issued = Array.isArray(json.issued_vouchers) ? json.issued_vouchers.length : 0;
         setMessage({
           kind: "ok",
-          text: type === "earn" ? `Added ${pointsDelta} point(s).` : "Reward redeemed.",
+          text: type === "earn" ? `Purchase recorded: ${pointsDelta} point(s).${issued ? ` ${issued} voucher${issued === 1 ? "" : "s"} issued!` : ""}` : "Reward redeemed.",
         });
+        if (type === "earn") { setPurchaseAmount(""); setBillReference(""); setCustomPoints(""); }
       } else {
+        if (res.status < 500) pendingRef.current = null;
         setMessage({ kind: "error", text: describeError(json.status, json.error) });
       }
       await loadCard(data.card.card_code, true);
@@ -167,8 +184,31 @@ export default function MerchantScanner() {
     }
   }
 
+  async function redeemVoucher(voucherId: string) {
+    if (!data || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setMessage(null);
+    try {
+      const response = await fetch("/api/vouchers/redeem", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cardCode: data.card.card_code, shopId, voucherId }),
+      });
+      if (response.status === 401) { router.replace("/merchant/login"); return; }
+      const result = await response.json();
+      setMessage(response.ok ? { kind: "ok", text: "Voucher redeemed." } :
+        { kind: "error", text: describeError(result.status, result.error) });
+      await loadCard(data.card.card_code, true);
+    } catch {
+      setMessage({ kind: "error", text: "Network error. Reload the card to check voucher status before retrying." });
+    } finally { submittingRef.current = false; setSubmitting(false); }
+  }
+
   const customValue = Number(customPoints);
   const customValid = Number.isInteger(customValue) && customValue > 0;
+  const normalizedAmount = purchaseAmount.trim().replace(",", ".");
+  const purchaseValid = /^(?:0|[1-9]\d{0,7})(?:\.\d{1,2})?$/.test(normalizedAmount) &&
+    Number(normalizedAmount) > 0 && !!billReference.trim() && billReference.trim().length <= 200;
   const active = data?.card.status === "active";
   const btn = "rounded-xl px-4 py-3 text-base font-semibold transition disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -177,32 +217,24 @@ export default function MerchantScanner() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-zinc-900">Scan loyalty card</h1>
         <div className="flex gap-2">
-        <Link href="/merchant/dashboard" className="rounded-xl bg-indigo-600 px-3 py-2 text-sm font-medium text-white">
+        {canAccessDashboard && <Link href="/merchant/dashboard" className="rounded-xl bg-indigo-600 px-3 py-2 text-sm font-medium text-white">
           Dashboard
+        </Link>}
+        <Link href="/merchant/select-brand" className="rounded-xl border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700">
+          Switch brand
         </Link>
-        <button
-          type="button"
-          onClick={async () => {
-            await stopScanner();
-            await getSupabaseBrowserClient().auth.signOut();
-            router.replace("/merchant/login");
-            router.refresh();
-          }}
-          className="rounded-xl border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700"
-        >
-          Sign Out
-        </button>
+        <SignOutButton beforeSignOut={stopScanner} />
         </div>
       </div>
 
       <section className="space-y-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-zinc-200">
         <label htmlFor="active-branch" className="block text-sm font-medium text-zinc-700">Active branch</label>
-        <select id="active-branch" value={shopId} disabled={scanning || loadingCard || submitting || shops.length === 0}
-          onChange={(event) => { setShopId(event.target.value); setData(null); setMessage(null); }}
+        {canAccessDashboard ? <select id="active-branch" value={shopId} disabled={scanning || loadingCard || submitting || shops.length === 0}
+          onChange={(event) => { setShopId(event.target.value); setData(null); setMessage(null); loadedCodeRef.current = null; }}
           className="w-full rounded-xl border border-zinc-300 px-4 py-3 text-base">
           {shops.length === 0 && <option value="">No active branches available</option>}
           {shops.map((shop) => <option key={shop.id} value={shop.id}>{shop.name}</option>)}
-        </select>
+        </select> : <p id="active-branch" className="text-sm text-zinc-700">{shops.find((shop) => shop.id === shopId)?.name ?? "No active assigned branch"}</p>}
         <div id={SCANNER_ID} className={scanning ? "overflow-hidden rounded-xl" : "hidden"} />
         <button
           type="button"
@@ -260,9 +292,17 @@ export default function MerchantScanner() {
 
           <section className="space-y-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-zinc-200">
             <h2 className="font-semibold text-zinc-900">Add points</h2>
+            <label className="block text-sm font-medium text-zinc-700">Purchase amount (EUR)
+              <input type="text" inputMode="decimal" disabled={submitting || loadingCard} value={purchaseAmount} onChange={(e) => setPurchaseAmount(e.target.value)}
+                placeholder="0.00" className="mt-1 w-full rounded-xl border border-zinc-300 px-4 py-3 text-base" />
+            </label>
+            <label className="block text-sm font-medium text-zinc-700">Bill reference
+              <input type="text" maxLength={200} disabled={submitting || loadingCard} value={billReference} onChange={(e) => setBillReference(e.target.value)}
+                placeholder="Receipt number" className="mt-1 w-full rounded-xl border border-zinc-300 px-4 py-3 text-base" />
+            </label>
             <button
               type="button"
-              disabled={submitting || !active}
+              disabled={submitting || loadingCard || !active || !purchaseValid}
               onClick={() => void submit("earn", 1)}
               className={`${btn} w-full bg-emerald-600 text-white`}
             >
@@ -271,6 +311,7 @@ export default function MerchantScanner() {
             <div className="flex gap-2">
               <input
                 type="number"
+                disabled={submitting || loadingCard}
                 inputMode="numeric"
                 min={1}
                 step={1}
@@ -282,15 +323,26 @@ export default function MerchantScanner() {
               />
               <button
                 type="button"
-                disabled={submitting || !active || !customValid}
-                onClick={() => {
-                  void submit("earn", customValue).then(() => setCustomPoints(""));
-                }}
+                disabled={submitting || loadingCard || !active || !customValid || !purchaseValid}
+                onClick={() => void submit("earn", customValue)}
                 className={`${btn} bg-emerald-600 text-white`}
               >
                 Add
               </button>
             </div>
+          </section>
+
+          <section className="space-y-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-zinc-200">
+            <h2 className="font-semibold text-zinc-900">Available vouchers</h2>
+            {data.vouchers.length === 0 && <p className="text-sm text-zinc-500">No active vouchers.</p>}
+            {data.vouchers.map((voucher) => (
+              <div key={voucher.id} className="flex items-center justify-between gap-3">
+                <div><p className="font-medium">{voucher.discount_type === "percent" ? `${voucher.discount_value}%` : `€${Number(voucher.discount_value).toFixed(2)}`} discount</p>
+                  <p className="text-xs text-zinc-500">Expires {new Date(voucher.expires_at).toLocaleDateString()}</p></div>
+                <button disabled={submitting || loadingCard || !active} onClick={() => void redeemVoucher(voucher.id)}
+                  className={`${btn} shrink-0 bg-indigo-600 text-white`}>Redeem</button>
+              </div>
+            ))}
           </section>
 
           <section className="space-y-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-zinc-200">
@@ -306,7 +358,7 @@ export default function MerchantScanner() {
                   </div>
                   <button
                     type="button"
-                    disabled={submitting || !active || !canRedeem}
+                    disabled={submitting || loadingCard || !active || !canRedeem}
                     onClick={() => void submit("redeem", -reward.points_required, reward.id)}
                     className={`${btn} shrink-0 bg-indigo-600 text-white`}
                   >
@@ -360,6 +412,17 @@ function describeError(status?: string, fallback?: string) {
       return "You cannot manage this branch.";
     case "branch_not_active":
       return "This branch is not active.";
+    case "duplicate_bill_reference":
+      return "This receipt was already recorded at this branch.";
+    case "purchase_details_required":
+    case "invalid_purchase_amount":
+      return "Enter a valid purchase amount and bill reference.";
+    case "voucher_not_active":
+      return "This voucher has already been redeemed or is no longer active.";
+    case "voucher_expired":
+      return "This voucher has expired.";
+    case "voucher_not_found":
+      return "Voucher not found for this card.";
     default:
       return fallback ?? "Transaction failed.";
   }

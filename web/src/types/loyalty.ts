@@ -64,6 +64,32 @@ export interface PointTransaction {
   performed_by: string | null;
   note: string | null;
   created_at: string;
+  purchase_amount: number | null;
+  bill_reference: string | null;
+}
+
+export interface CustomerVoucher {
+  id: string;
+  voucher_code: string;
+  discount_type: "percent" | "fixed";
+  discount_value: number;
+  status: "active" | "redeemed" | "expired";
+  issued_at: string;
+  expires_at: string;
+  redeemed_at: string | null;
+}
+
+export type PublicVoucher = Pick<CustomerVoucher, "discount_type" | "discount_value" | "status" | "issued_at" | "expires_at" | "redeemed_at">;
+
+export interface SpendVoucherRule {
+  id: string;
+  name: string;
+  min_spend_amount: number;
+  window_days: number;
+  discount_type: "percent" | "fixed";
+  discount_value: number;
+  voucher_valid_days: number;
+  is_active: boolean;
 }
 
 export type ProcessLoyaltyTransactionStatus =

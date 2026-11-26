@@ -1,9 +1,11 @@
 import { Suspense } from "react";
 import JoinForm from "@/components/JoinForm";
+import { getBrandThemeByShopSlug } from "@/lib/brand";
 
 async function JoinContent({ params }: { params: Promise<{ shopSlug: string }> }) {
   const { shopSlug } = await params;
-  return <JoinForm shopSlug={shopSlug} />;
+  const brand = await getBrandThemeByShopSlug(shopSlug);
+  return <JoinForm shopSlug={shopSlug} brand={brand} />;
 }
 
 export default function JoinPage({ params }: { params: Promise<{ shopSlug: string }> }) {

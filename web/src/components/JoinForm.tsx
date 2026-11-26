@@ -5,8 +5,11 @@ import { useRouter } from "next/navigation";
 import EmailOtpVerifier from "@/components/EmailOtpVerifier";
 import { CORE_CONSENT_TEXT, MARKETING_CONSENT_TEXT } from "@/lib/consent-text";
 import type { LoyaltyCard } from "@/types/loyalty";
+import type { BrandTheme } from "@/lib/brand";
+import { contrastingText } from "@/lib/brand-style";
+import BrandLogo from "@/components/BrandLogo";
 
-export default function JoinForm({ shopSlug }: { shopSlug: string }) {
+export default function JoinForm({ shopSlug, brand }: { shopSlug: string; brand: BrandTheme | null }) {
   const router = useRouter();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -54,6 +57,8 @@ export default function JoinForm({ shopSlug }: { shopSlug: string }) {
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center bg-zinc-50 px-4 py-8">
+      {brand && <BrandLogo brand={brand} />}
+      {brand && <p className="mb-1 font-medium" style={{ color: brand.primary_color }}>{brand.name}</p>}
       <h1 className="text-3xl font-bold text-zinc-900">Join our loyalty program</h1>
       <p className="mt-2 text-zinc-600">Get your digital card and start collecting points.</p>
 
@@ -80,6 +85,7 @@ export default function JoinForm({ shopSlug }: { shopSlug: string }) {
         <p className="text-sm text-zinc-600">{CORE_CONSENT_TEXT}</p>
         <label className="flex items-start gap-3 text-sm text-zinc-700">
           <input type="checkbox" checked={marketingAdsConsent} onChange={(e) => setMarketingAdsConsent(e.target.checked)}
+            style={brand ? { accentColor: brand.secondary_color } : undefined}
             className="mt-1 h-4 w-4 accent-indigo-600" />
           <span>{MARKETING_CONSENT_TEXT}</span>
         </label>
@@ -87,7 +93,8 @@ export default function JoinForm({ shopSlug }: { shopSlug: string }) {
         {error && <p role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
         <button type="submit" disabled={loading || !verifiedEmail || verifiedEmail !== email.trim().toLowerCase()}
-          className="w-full rounded-xl bg-indigo-600 px-4 py-3.5 text-base font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-60">
+          style={brand ? { backgroundColor: brand.primary_color, color: contrastingText(brand.primary_color) } : undefined}
+          className="w-full rounded-xl bg-indigo-600 px-4 py-3.5 text-base font-semibold text-white shadow-sm transition disabled:opacity-60">
           {loading ? "Creating your card…" : "Get my card"}
         </button>
       </form>

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
-import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
+import SignOutButton from "@/components/SignOutButton";
 import type { LoyaltyBrand, Reward, Shop } from "@/types/loyalty";
 
 type ShopWithStats = Shop & { rewards: Reward[]; card_count: number; customer_count: number };
@@ -76,11 +76,23 @@ export default function MerchantDashboard() {
         setError([json.error ?? "Request failed.", json.details].filter(Boolean).join(" "));
         return false;
       }
-      if (url.endsWith("/shops") && json.shop) setSelectedId(json.shop.id);
+      if (url.endsWith("/shops") && json.shop) {
+        setSelectedId(json.shop.id);
+        if (creationMode === "brand" && json.shop.brand_id) {
+          const selection = await fetch("/api/merchant/select-brand", {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ brandId: json.shop.brand_id }),
+          });
+          const result = await selection.json();
+          if (!selection.ok) throw new Error(`Brand created, but could not open setup. Select it from Switch brand. ${result.error ?? ""}`);
+          router.replace(result.redirect);
+          router.refresh();
+          return true;
+        }
+      }
       await load();
       return true;
-    } catch {
-      setError("Network error.");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Network error.");
       return false;
     } finally {
       setBusy(false);
@@ -116,12 +128,6 @@ export default function MerchantDashboard() {
     }
   }
 
-  async function signOut() {
-    await getSupabaseBrowserClient().auth.signOut();
-    router.replace("/merchant/login");
-    router.refresh();
-  }
-
   const selected = shops.find((s) => s.id === selectedId) ?? null;
   const selectedBrand = brands.find((brand) => brand.id === selected?.brand_id);
   const joinUrl = selected && origin ? `${origin}/join/${selected.slug}` : "";
@@ -141,12 +147,13 @@ export default function MerchantDashboard() {
       <header className="flex items-center justify-between print:hidden">
         <h1 className="text-2xl font-bold text-zinc-900">Dashboard</h1>
         <div className="flex gap-2">
+          <Link href="/merchant/select-brand" className="rounded-xl border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700">
+            Switch brand
+          </Link>
           <Link href="/merchant/scan" className="rounded-xl bg-indigo-600 px-3 py-2 text-sm font-medium text-white">
             Scan
           </Link>
-          <button onClick={signOut} className="rounded-xl border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700">
-            Sign Out
-          </button>
+          <SignOutButton />
         </div>
       </header>
 

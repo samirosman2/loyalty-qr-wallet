@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedUser } from "@/lib/supabase/auth-server";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
+import { getActiveMembership, getMemberships } from "@/lib/brand-access";
 import type { Reward, Shop } from "@/types/loyalty";
 
 function fail(message: string, status: number) {
@@ -27,13 +28,13 @@ async function ownsShop(shopId: string, userId: string) {
     .eq("id", shopId)
     .maybeSingle<Pick<Shop, "owner_user_id" | "brand_id">>();
   if (error) return { exists: false, owned: false, error };
-  if (!data || data.owner_user_id === userId || !data.brand_id) {
-    return { exists: !!data, owned: data?.owner_user_id === userId, error: null };
+  if (!data) return { exists: false, owned: false, error: null };
+  const active = await getActiveMembership(userId);
+  if (!data.brand_id) {
+    const allowed = active ? active.role === "owner" : (await getMemberships(userId)).length === 0;
+    return { exists: true, owned: allowed && data.owner_user_id === userId, error: null };
   }
-  const { data: membership, error: memberError } = await supabase.from("brand_members")
-    .select("id").eq("brand_id", data.brand_id).eq("user_id", userId)
-    .in("role", ["owner", "manager"]).maybeSingle();
-  return { exists: true, owned: !!membership, error: memberError };
+  return { exists: true, owned: active?.role === "owner" && active.brand_id === data.brand_id, error: null };
 }
 
 export async function POST(request: Request) {

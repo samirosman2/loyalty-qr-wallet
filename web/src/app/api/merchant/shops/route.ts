@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getAuthenticatedUser } from "@/lib/supabase/auth-server";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
 import { getShopRewards } from "@/lib/loyalty-data";
+import { getActiveMembership, getMemberships } from "@/lib/brand-access";
 import type { LoyaltyBrand, Shop } from "@/types/loyalty";
 
 function fail(message: string, status: number) {
@@ -17,20 +18,18 @@ function normalizeSlug(input: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const user = await getAuthenticatedUser();
   if (!user) return fail("Unauthorized.", 401);
 
   const supabase = createSupabaseAdminClient();
-  const { data: memberships, error: membershipError } = await supabase
-    .from("brand_members")
-    .select("brand_id")
-    .eq("user_id", user.id)
-    .in("role", ["owner", "manager"])
-    .returns<{ brand_id: string }[]>();
-  if (membershipError) return fail("Could not load brands.", 500);
-
-  const brandIds = [...new Set(memberships.map((member) => member.brand_id))];
+  const memberships = await getMemberships(user.id);
+  const active = await getActiveMembership(user.id);
+  const scanMode = new URL(request.url).searchParams.get("mode") === "scan";
+  if ((memberships.length && !active) || active?.role === "cashier" || (active?.role === "manager" && !scanMode)) {
+    return fail("Forbidden.", 403);
+  }
+  const brandIds = active ? [active.brand_id] : [];
   let brands: (LoyaltyBrand & { branch_count: number })[] = [];
   if (brandIds.length) {
     const { data, error: brandError } = await supabase
@@ -49,10 +48,15 @@ export async function GET() {
     brands = data.map((brand, index) => ({ ...brand, branch_count: counts[index].count! }));
   }
 
-  const { data: shops, error } = await supabase
-    .from("shops")
-    .select("*")
-    .eq("owner_user_id", user.id)
+  let shopQuery = supabase.from("shops").select("*");
+  if (active?.role === "manager") {
+    shopQuery = shopQuery.eq("id", active.assigned_shop_id ?? "").eq("brand_id", active.brand_id);
+  } else if (active) {
+    shopQuery = shopQuery.or(`brand_id.eq.${active.brand_id},and(brand_id.is.null,owner_user_id.eq.${user.id})`);
+  } else {
+    shopQuery = shopQuery.eq("owner_user_id", user.id).is("brand_id", null);
+  }
+  const { data: shops, error } = await shopQuery
     .order("created_at", { ascending: true })
     .returns<Shop[]>();
   if (error) return fail("Could not load shops.", 500);
@@ -78,6 +82,9 @@ export async function POST(request: Request) {
   try {
     const user = await getAuthenticatedUser();
     if (!user) return fail("Unauthorized.", 401);
+    const memberships = await getMemberships(user.id);
+    const active = await getActiveMembership(user.id);
+    if ((memberships.length && !active) || (active && active.role !== "owner")) return fail("Forbidden.", 403);
 
     let body: unknown;
     try {
@@ -101,6 +108,7 @@ export async function POST(request: Request) {
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(brandId))) {
       return fail("brandId must be a valid UUID.", 400);
     }
+    if (brandId !== undefined && brandId !== active?.brand_id) return fail("Forbidden.", 403);
 
     const slug = normalizeSlug(rawSlug?.trim() || name);
     const description = rawDescription?.trim();

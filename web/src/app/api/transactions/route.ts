@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedUser } from "@/lib/supabase/auth-server";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
+import { canScanShop } from "@/lib/brand-access";
 import type {
   LoyaltyCard,
   Shop,
@@ -21,6 +22,9 @@ const STATUS_CODES: Record<string, number> = {
   forbidden: 403,
   branch_not_active: 409,
   invalid_reward: 400,
+  invalid_purchase_amount: 400,
+  purchase_details_required: 400,
+  duplicate_bill_reference: 409,
 };
 
 function fail(message: string, status: number) {
@@ -46,6 +50,9 @@ export async function POST(request: Request) {
   const rewardId = typeof body.rewardId === "string" && body.rewardId ? body.rewardId : null;
   const suppliedKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
   const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : null;
+  const rawAmount = typeof body.purchaseAmount === "string" ? body.purchaseAmount.trim() :
+    typeof body.purchaseAmount === "number" && Number.isFinite(body.purchaseAmount) ? String(body.purchaseAmount) : "";
+  const billReference = typeof body.billReference === "string" ? body.billReference.trim() : "";
 
   if (!cardCode) return fail("cardCode is required.", 400);
   if (!TYPES.includes(type)) return fail("type must be earn, redeem or adjust.", 400);
@@ -55,6 +62,13 @@ export async function POST(request: Request) {
   if (Math.abs(pointsDelta) > 100000) return fail("pointsDelta is too large.", 400);
   if (type === "earn" && pointsDelta < 0) return fail("Earn requires a positive pointsDelta.", 400);
   if (type === "redeem" && pointsDelta > 0) return fail("Redeem requires a negative pointsDelta.", 400);
+  if (type === "earn" && (!suppliedKey || !/^(?:0|[1-9]\d{0,7})(?:\.\d{1,2})?$/.test(rawAmount) ||
+      Number(rawAmount) <= 0 || !billReference || billReference.length > 200)) {
+    return fail("A positive EUR purchase amount, bill reference and idempotency key are required.", 400);
+  }
+  if (type !== "earn" && (body.purchaseAmount != null || body.billReference != null)) {
+    return fail("Purchase details apply only when awarding points.", 400);
+  }
 
   let supabase;
   try {
@@ -83,7 +97,7 @@ export async function POST(request: Request) {
     .eq("id", shopId)
     .maybeSingle<Shop>();
   if (shopError) return fail("Could not load branch.", 500);
-  if (!shop || shop.owner_user_id !== user.id) return fail("Forbidden.", 403);
+  if (!shop || !await canScanShop(user.id, shop)) return fail("Forbidden.", 403);
   if (!shop.is_active) return fail("Branch is not active.", 409);
 
   if (shop.brand_id) {
@@ -97,6 +111,8 @@ export async function POST(request: Request) {
       p_idempotency_key: suppliedKey,
       p_reward_id: rewardId,
       p_note: note,
+      p_purchase_amount: type === "earn" ? rawAmount : 0,
+      p_bill_reference: type === "earn" ? billReference : null,
     });
     if (error || !data) {
       console.error("[POST /api/transactions]", error);
@@ -107,10 +123,30 @@ export async function POST(request: Request) {
       return fail("Could not process transaction.", 500);
     }
     const status = data.status === "success" || data.status === "duplicate" ? 200 : STATUS_CODES[data.status];
-    return NextResponse.json({ status: data.status, card_id: data.card_id ?? null, new_balance: data.new_balance ?? null }, { status });
+    if ((data.status === "success" || data.status === "duplicate") && !Array.isArray(data.issued_vouchers)) {
+      console.error("[POST /api/transactions] Missing issued vouchers", data);
+      return fail("Could not process transaction.", 500);
+    }
+    return NextResponse.json({
+      status: data.status, card_id: data.card_id ?? null, new_balance: data.new_balance ?? null,
+      purchase_at: data.purchase_at ?? null, issued_vouchers: data.issued_vouchers ?? [],
+    }, { status });
   }
 
   if (card.shop_id !== shop.id) return fail("Card belongs to a different shop.", 403);
+
+  if (type === "earn") {
+    const { data, error } = await supabase.rpc("slice2d_unbranded_purchase", {
+      p_user_id: user.id, p_shop_id: shop.id, p_card_code: cardCode, p_delta: pointsDelta,
+      p_idempotency_key: suppliedKey, p_note: note, p_purchase_amount: rawAmount, p_bill_reference: billReference,
+    });
+    if (error || !data || typeof data.status !== "string" || !["success", "duplicate", ...Object.keys(STATUS_CODES)].includes(data.status)) {
+      console.error("[POST /api/transactions] Unbranded purchase failed", error ?? data);
+      return fail("Could not process transaction.", 500);
+    }
+    const status = data.status === "success" || data.status === "duplicate" ? 200 : STATUS_CODES[data.status];
+    return NextResponse.json(data, { status });
+  }
 
   if (type === "redeem") {
     if (!rewardId) return fail("rewardId is required for redemptions.", 400);

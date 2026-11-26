@@ -11,8 +11,11 @@ export async function proxy(request: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       ...(request.nextUrl.pathname.startsWith("/merchant/") ||
+      request.nextUrl.pathname.startsWith("/brand/") ||
       request.nextUrl.pathname.startsWith("/api/merchant/") ||
+      request.nextUrl.pathname.startsWith("/api/brand/") ||
       request.nextUrl.pathname.startsWith("/api/cards/") ||
+      request.nextUrl.pathname.startsWith("/api/vouchers/") ||
       request.nextUrl.pathname === "/api/transactions"
         ? {}
         : { cookieOptions: { name: CUSTOMER_AUTH_COOKIE } }),
@@ -32,5 +35,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/merchant/:path*", "/api/cards/:path*", "/api/transactions", "/api/merchant/:path*", "/join/:path*", "/card/:path*", "/api/customers/signup", "/api/customer/consents"],
+  matcher: ["/merchant/:path*", "/brand/:path*", "/api/brand/:path*", "/api/cards/:path*", "/api/vouchers/:path*", "/api/transactions", "/api/merchant/:path*", "/join/:path*", "/card/:path*", "/api/customers/signup", "/api/customer/consents"],
 };

@@ -5,7 +5,10 @@ import RememberCard from "@/components/RememberCard";
 import SaveCardPrompt from "@/components/SaveCardPrompt";
 import ConsentSettings from "@/components/ConsentSettings";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
-import { getBrandBalance, getShopRewards } from "@/lib/loyalty-data";
+import { getBrandBalance, getPublicVouchers, getShopRewards } from "@/lib/loyalty-data";
+import { getBrandThemeById } from "@/lib/brand";
+import { contrastingText } from "@/lib/brand-style";
+import BrandLogo from "@/components/BrandLogo";
 import type { Customer, LoyaltyCard, Shop } from "@/types/loyalty";
 
 async function CardView({ params }: { params: Promise<{ cardCode: string }> }) {
@@ -26,20 +29,24 @@ async function CardView({ params }: { params: Promise<{ cardCode: string }> }) {
   ]);
   if (shopError || customerError) throw shopError || customerError;
   if (!shop || !customer) notFound();
-  const [rewards, balance] = await Promise.all([
+  const [rewards, balance, brand, vouchers] = await Promise.all([
     getShopRewards(supabase, shop, true),
     shop.brand_id ? getBrandBalance(supabase, shop.brand_id, card.customer_id) : Promise.resolve(card.points_balance),
+    shop.brand_id ? getBrandThemeById(shop.brand_id) : Promise.resolve(null),
+    shop.brand_id ? getPublicVouchers(supabase, shop.brand_id, card.customer_id) : Promise.resolve([]),
   ]);
 
   return (
     <main className="mx-auto min-h-dvh w-full max-w-md bg-zinc-50 px-4 py-6">
       <RememberCard cardCode={card.card_code} />
-      <section className="rounded-3xl bg-gradient-to-br from-indigo-600 to-violet-700 p-6 text-white shadow-lg">
-        <p className="text-sm uppercase tracking-wide text-indigo-100">{shop.name}</p>
+      <section className="rounded-3xl bg-gradient-to-br from-indigo-600 to-violet-700 p-6 text-white shadow-lg"
+        style={brand ? { backgroundImage: "none", backgroundColor: brand.primary_color, color: contrastingText(brand.primary_color) } : undefined}>
+        {brand && <BrandLogo brand={brand} />}
+        <p className="text-sm uppercase tracking-wide">{brand ? `${brand.name} · ${shop.name}` : shop.name}</p>
         <h1 className="mt-1 text-2xl font-semibold">{customer.full_name}</h1>
         <div className="mt-6 flex items-end justify-between">
           <div>
-            <p className="text-sm text-indigo-100">Points</p>
+            <p className="text-sm">Points</p>
             <p className="text-5xl font-bold tabular-nums">{balance}</p>
           </div>
           {card.status !== "active" && (
@@ -56,6 +63,17 @@ async function CardView({ params }: { params: Promise<{ cardCode: string }> }) {
 
       <SaveCardPrompt />
       <ConsentSettings cardCode={card.card_code} />
+
+      <section className="mt-8">
+        <h2 className="text-lg font-semibold text-zinc-900">Vouchers</h2>
+        {vouchers.length === 0 ? <p className="mt-3 text-sm text-zinc-500">No active or redeemed vouchers yet.</p> :
+          <ul className="mt-3 space-y-3">{vouchers.map((voucher, index) => (
+            <li key={`${voucher.issued_at}-${index}`} className="rounded-2xl border border-zinc-200 bg-white p-4">
+              <p className="font-medium">{voucher.discount_type === "percent" ? `${voucher.discount_value}%` : `€${Number(voucher.discount_value).toFixed(2)}`} discount</p>
+              <p className="text-sm text-zinc-500">{voucher.status === "redeemed" ? `Redeemed ${new Date(voucher.redeemed_at ?? voucher.issued_at).toLocaleDateString()}` : `Active · expires ${new Date(voucher.expires_at).toLocaleDateString()}`}</p>
+            </li>
+          ))}</ul>}
+      </section>
 
       <section className="mt-8">
         <h2 className="text-lg font-semibold text-zinc-900">Rewards</h2>
@@ -85,7 +103,7 @@ async function CardView({ params }: { params: Promise<{ cardCode: string }> }) {
                   <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-100">
                     <div
                       className={`h-full rounded-full ${unlocked ? "bg-emerald-500" : "bg-indigo-500"}`}
-                      style={{ width: `${progress}%` }}
+                      style={{ width: `${progress}%`, ...(!unlocked && brand ? { backgroundColor: brand.secondary_color } : {}) }}
                     />
                   </div>
                   <p className={`mt-2 text-sm ${unlocked ? "font-medium text-emerald-700" : "text-zinc-500"}`}>

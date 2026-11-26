@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedUser } from "@/lib/supabase/auth-server";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
-import { getBrandBalance, getShopRewards } from "@/lib/loyalty-data";
+import { getActiveVouchers, getBrandBalance, getShopRewards } from "@/lib/loyalty-data";
+import { canScanShop } from "@/lib/brand-access";
 import type { Customer, LoyaltyCard, PointTransaction, Shop } from "@/types/loyalty";
 
 export async function GET(request: Request, { params }: { params: Promise<{ cardCode: string }> }) {
@@ -42,19 +43,20 @@ export async function GET(request: Request, { params }: { params: Promise<{ card
     .from("shops").select("*").eq("id", selectedShopId).maybeSingle<Shop>();
   if (shopError) return NextResponse.json({ error: "Could not load branch." }, { status: 500 });
   if (!shop) return NextResponse.json({ error: "Branch not found." }, { status: 404 });
-  if (shop.owner_user_id !== user.id) return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+  if (!await canScanShop(user.id, shop)) return NextResponse.json({ error: "Forbidden." }, { status: 403 });
   if (!shop.is_active) return NextResponse.json({ error: "Branch is not active." }, { status: 409 });
   if (cardShop.brand_id ? cardShop.brand_id !== shop.brand_id : cardShop.id !== shop.id) {
     return NextResponse.json({ error: "This card belongs to a different brand." }, { status: 403 });
   }
 
   try {
-    const [customerRes, rewards, txRes, balance] = await Promise.all([
+    const [customerRes, rewards, txRes, balance, vouchers] = await Promise.all([
       supabase.from("customers").select("*").eq("id", card.customer_id).single<Customer>(),
       getShopRewards(supabase, shop, true),
       supabase.from("point_transactions").select("*").eq("card_id", card.id)
         .order("created_at", { ascending: false }).limit(10).returns<PointTransaction[]>(),
       shop.brand_id ? getBrandBalance(supabase, shop.brand_id, card.customer_id) : Promise.resolve(card.points_balance),
+      shop.brand_id ? getActiveVouchers(supabase, shop.brand_id, card.customer_id) : Promise.resolve([]),
     ]);
 
     if (customerRes.error || txRes.error) {
@@ -67,6 +69,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ card
       shop,
       rewards,
       transactions: txRes.data ?? [],
+      vouchers,
     });
   } catch (error) {
     console.error("[GET /api/cards/[cardCode]]", error);
